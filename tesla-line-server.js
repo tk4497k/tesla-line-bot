@@ -10,7 +10,7 @@ var app = express();
 var PORT = process.env.PORT || 3000;
 
 console.log("ENV CHECK:", process.env.TESLA_CLIENT_ID ? "CLIENT_ID OK" : "CLIENT_ID MISSING");
-console.log("ENV CHECK:", process.env.ANTHROPIC_API_KEY ? "ANTHROPIC_KEY OK" : "ANTHROPIC_KEY MISSING");
+console.log("ENV CHECK ANTHROPIC:", process.env.ANTHROPIC_API_KEY ? process.env.ANTHROPIC_API_KEY.substring(0, 15) + "..." : "MISSING");
 
 // --- LINE ---
 var lineConfig = {
