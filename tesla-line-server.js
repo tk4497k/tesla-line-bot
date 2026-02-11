@@ -494,7 +494,6 @@ app.get("/vehicles", async (req, res) => {
 Live になったら以下にアクセス：
 ```
 https://tesla-line-bot.onrender.com/vehicles
-
 app.get("/", (req, res) => {
   res.json({
     status: "running",
