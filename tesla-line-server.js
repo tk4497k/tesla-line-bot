@@ -477,7 +477,23 @@ app.get(
 );
 
 // ─── ヘルスチェック ─────────────────────────────
+app.get("/vehicles", async (req, res) => {
+  try {
+    const r = await axios.get(`${TESLA_API_BASE}/api/1/vehicles`, {
+      headers: { Authorization: `Bearer ${teslaTokens.accessToken}` },
+    });
+    res.json(r.data);
+  } catch (e) {
+    res.json({ error: e.response?.data || e.message });
+  }
+});
+```
 
+3. **Commit changes**
+
+Live になったら以下にアクセス：
+```
+https://tesla-line-bot.onrender.com/vehicles
 app.get("/", (req, res) => {
   res.json({
     status: "running",
