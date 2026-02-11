@@ -9,7 +9,7 @@
 //   3. .env ファイルに環境変数を設定
 //   4. node tesla-line-server.js
 // ============================================================
-
+console.log("ENV CHECK:", process.env.TESLA_CLIENT_ID ? "CLIENT_ID OK" : "CLIENT_ID MISSING");
 require("dotenv").config();
 const express = require("express");
 const crypto = require("crypto");
