@@ -36,6 +36,10 @@ var TESLA_CLIENT_SECRET = process.env.TESLA_CLIENT_SECRET;
 // --- Tesla API ヘルパー ---
 async function refreshTeslaToken() {
   try {
+    if (msg.indexOf("起きて") >= 0 || msg.indexOf("起こして") >= 0 || msg.indexOf("ウェイク") >= 0) {
+      await wakeUpVehicle();
+      return "🚗 車両を起こしました！少し待ってから他のコマンドを試してください。";
+    }
     var res = await axios.post("https://auth.tesla.com/oauth2/v3/token", {
       grant_type: "refresh_token",
       client_id: TESLA_CLIENT_ID,
