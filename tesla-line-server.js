@@ -413,7 +413,7 @@ app.get("/auth/callback", async (req, res) => {
         client_id: TESLA_CLIENT_ID,
         client_secret: TESLA_CLIENT_SECRET,
         code,
-        redirect_uri: `${req.protocol}://${req.get("host")}/auth/callback`,
+        redirect_uri: `https://${req.get("host")}/auth/callback`,
       }
     );
 
