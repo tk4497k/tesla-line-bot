@@ -420,16 +420,28 @@ app.get("/auth/callback", async (req, res) => {
     teslaTokens.accessToken = tokenRes.data.access_token;
     teslaTokens.refreshToken = tokenRes.data.refresh_token;
 
-    // 車両一覧を取得
-    const vehiclesRes = await axios.get(
-      `${TESLA_API_BASE}/api/1/vehicles`,
-      {
-        headers: {
-          Authorization: `Bearer ${teslaTokens.accessToken}`,
-        },
-      }
-    );
+    // パートナー登録
+    try {
+      await axios.post(
+        `${TESLA_API_BASE}/api/1/partner_accounts`,
+        { domain: "tesla-line-bot.onrender.com" },
+        { headers: { Authorization: `Bearer ${teslaTokens.accessToken}`, "Content-Type": "application/json" } }
+      );
+    } catch (e) {
+      console.log("Partner registration:", e.response?.data || e.message);
+    }
 
+    // 車両一覧を取得
+    let vehicles = [];
+    try {
+      const vehiclesRes = await axios.get(
+        `${TESLA_API_BASE}/api/1/vehicles`,
+        { headers: { Authorization: `Bearer ${teslaTokens.accessToken}` } }
+      );
+      vehicles = vehiclesRes.data;
+    } catch (e) {
+      console.log("Vehicle list error:", e.response?.data || e.message);
+    }
     res.send(`
       <h1>✅ Tesla 認証成功！</h1>
       <h2>トークン情報（.envに保存してください）</h2>
@@ -438,7 +450,7 @@ TESLA_ACCESS_TOKEN=${teslaTokens.accessToken}
 TESLA_REFRESH_TOKEN=${teslaTokens.refreshToken}
       </pre>
       <h2>車両一覧</h2>
-      <pre>${JSON.stringify(vehiclesRes.data, null, 2)}</pre>
+      <pre>${JSON.stringify(vehicles.data, null, 2)}</pre>
       <p>vehicle_id を .env の TESLA_VEHICLE_ID に設定してください。</p>
     `);
   } catch (err) {
