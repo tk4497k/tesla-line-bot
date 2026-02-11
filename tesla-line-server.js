@@ -10,8 +10,9 @@ var app = express();
 var PORT = process.env.PORT || 3000;
 
 console.log("ENV CHECK:", process.env.TESLA_CLIENT_ID ? "CLIENT_ID OK" : "CLIENT_ID MISSING");
+console.log("ENV CHECK:", process.env.ANTHROPIC_API_KEY ? "ANTHROPIC_KEY OK" : "ANTHROPIC_KEY MISSING");
 
-// --- LINE 設定 ---
+// --- LINE ---
 var lineConfig = {
   channelSecret: process.env.LINE_CHANNEL_SECRET,
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
@@ -23,7 +24,7 @@ if (lineConfig.channelAccessToken) {
   });
 }
 
-// --- Tesla 設定 ---
+// --- Tesla ---
 var teslaTokens = {
   accessToken: process.env.TESLA_ACCESS_TOKEN,
   refreshToken: process.env.TESLA_REFRESH_TOKEN,
@@ -33,13 +34,17 @@ var TESLA_API_BASE = process.env.TESLA_API_BASE || "https://fleet-api.prd.na.vn.
 var TESLA_CLIENT_ID = process.env.TESLA_CLIENT_ID;
 var TESLA_CLIENT_SECRET = process.env.TESLA_CLIENT_SECRET;
 
-// --- Tesla API ヘルパー ---
+// --- Claude ---
+var ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+
+// --- 会話履歴 ---
+var conversationHistory = {};
+var MAX_HISTORY = 20;
+
+// === Tesla API ヘルパー ===
+
 async function refreshTeslaToken() {
   try {
-    if (msg.indexOf("起きて") >= 0 || msg.indexOf("起こして") >= 0 || msg.indexOf("ウェイク") >= 0) {
-      await wakeUpVehicle();
-      return "🚗 車両を起こしました！少し待ってから他のコマンドを試してください。";
-    }
     var res = await axios.post("https://auth.tesla.com/oauth2/v3/token", {
       grant_type: "refresh_token",
       client_id: TESLA_CLIENT_ID,
@@ -47,10 +52,8 @@ async function refreshTeslaToken() {
       refresh_token: teslaTokens.refreshToken,
     });
     teslaTokens.accessToken = res.data.access_token;
-    if (res.data.refresh_token) {
-      teslaTokens.refreshToken = res.data.refresh_token;
-    }
-    console.log("Tesla token refreshed successfully");
+    if (res.data.refresh_token) teslaTokens.refreshToken = res.data.refresh_token;
+    console.log("Tesla token refreshed");
     return true;
   } catch (err) {
     console.error("Token refresh failed:", err.response ? err.response.data : err.message);
@@ -66,14 +69,13 @@ async function teslaRequest(method, urlPath, data) {
     headers: { Authorization: "Bearer " + teslaTokens.accessToken },
   };
   if (data) config.data = data;
-
   try {
     var res = await axios(config);
     return res.data;
   } catch (err) {
     if (err.response && err.response.status === 401) {
-      var refreshed = await refreshTeslaToken();
-      if (refreshed) {
+      var ok = await refreshTeslaToken();
+      if (ok) {
         config.headers.Authorization = "Bearer " + teslaTokens.accessToken;
         var res2 = await axios(config);
         return res2.data;
@@ -86,9 +88,11 @@ async function teslaRequest(method, urlPath, data) {
 async function wakeUpVehicle() {
   try {
     await teslaRequest("POST", "/wake_up");
-    await new Promise(function (resolve) { setTimeout(resolve, 5000); });
+    await new Promise(function (r) { setTimeout(r, 5000); });
+    return true;
   } catch (err) {
     console.error("Wake up failed:", err.message);
+    return false;
   }
 }
 
@@ -118,119 +122,169 @@ async function sendCommand(command, body) {
   }
 }
 
-// --- メッセージ処理 ---
-async function handleMessage(userMessage) {
-  var msg = userMessage.toLowerCase();
+// === 車両データをLLM用に整形 ===
 
+function formatVehicleDataForLLM(data) {
   try {
-    if (msg.indexOf("バッテリー") >= 0 || msg.indexOf("充電") >= 0 || msg.indexOf("電池") >= 0 || msg.indexOf("残量") >= 0) {
-      var data = await getVehicleData();
-      var cs = data.charge_state;
-      var result = "🔋 バッテリー情報\n\n残量: " + cs.battery_level + "%\n航続距離: " + Math.round(cs.battery_range * 1.60934) + " km\n充電状態: " + (cs.charging_state === "Disconnected" ? "未接続" : cs.charging_state === "Charging" ? "充電中" : cs.charging_state) + "\n充電上限: " + cs.charge_limit_soc + "%";
-      if (cs.time_to_full_charge > 0) result += "\n満充電まで: 約" + Math.round(cs.time_to_full_charge * 60) + "分";
-      return result;
-    }
-
-    if (msg.indexOf("エアコンつけて") >= 0 || msg.indexOf("エアコンオン") >= 0 || msg.indexOf("暖めて") >= 0 || msg.indexOf("プレコン") >= 0) {
-      await sendCommand("auto_conditioning_start");
-      return "✅ エアコンをONにしました！\n車内が快適になるまでお待ちください 🚗";
-    }
-
-    if (msg.indexOf("エアコン消して") >= 0 || msg.indexOf("エアコンオフ") >= 0 || msg.indexOf("エアコン止めて") >= 0) {
-      await sendCommand("auto_conditioning_stop");
-      return "✅ エアコンをOFFにしました。";
-    }
-
-    if (msg.indexOf("エアコン") >= 0 || msg.indexOf("温度") >= 0 || msg.indexOf("空調") >= 0) {
-      var data = await getVehicleData();
-      var cl = data.climate_state;
-      return "🌡️ 空調情報\n\n車内温度: " + cl.inside_temp + "°C\n外気温: " + cl.outside_temp + "°C\nエアコン: " + (cl.is_climate_on ? "ON" : "OFF") + "\n設定温度: " + cl.driver_temp_setting + "°C";
-    }
-
-    if (msg.indexOf("場所") >= 0 || msg.indexOf("位置") >= 0 || msg.indexOf("どこ") >= 0 || msg.indexOf("駐車") >= 0) {
-      var data = await getVehicleData();
-      var ds = data.drive_state;
-      return "📍 現在位置\n\nhttps://maps.google.com/?q=" + ds.latitude + "," + ds.longitude;
-    }
-
-    if (msg.indexOf("ロック解除") >= 0 || msg.indexOf("アンロック") >= 0 || msg.indexOf("鍵開けて") >= 0 || msg.indexOf("開錠") >= 0) {
-      await sendCommand("door_unlock");
-      return "🔓 ドアロックを解除しました！";
-    }
-
-    if (msg.indexOf("施錠") >= 0 || msg.indexOf("ロックして") >= 0) {
-      await sendCommand("door_lock");
-      return "🔒 ドアをロックしました！";
-    }
-
-    if (msg.indexOf("ロック") >= 0 || msg.indexOf("鍵") >= 0) {
-      var data = await getVehicleData();
-      var vs = data.vehicle_state;
-      return "🔒 ロック状態\n\nドア: " + (vs.locked ? "施錠済み ✅" : "解錠中 ⚠️") + "\nセントリーモード: " + (vs.sentry_mode ? "ON" : "OFF");
-    }
-
-    if (msg.indexOf("トランク") >= 0 && msg.indexOf("開") >= 0) {
-      await sendCommand("actuate_trunk", { which_trunk: "rear" });
-      return "✅ リアトランクを開けました！ 📦";
-    }
-
-    if (msg.indexOf("フランク") >= 0 && msg.indexOf("開") >= 0) {
-      await sendCommand("actuate_trunk", { which_trunk: "front" });
-      return "✅ フランク（前トランク）を開けました！";
-    }
-
-    if (msg.indexOf("クラクション") >= 0 || msg.indexOf("ホーン") >= 0) {
-      await sendCommand("honk_horn");
-      return "📢 クラクションを鳴らしました！";
-    }
-
-    if (msg.indexOf("フラッシュ") >= 0 || msg.indexOf("ライト") >= 0) {
-      await sendCommand("flash_lights");
-      return "💡 ヘッドライトをフラッシュしました！ ✨";
-    }
-
-    if (msg.indexOf("セントリー") >= 0 || msg.indexOf("監視") >= 0) {
-      var data = await getVehicleData();
-      return "👁️ セントリーモード: " + (data.vehicle_state.sentry_mode ? "有効 ✅" : "無効");
-    }
-
-    if (msg.indexOf("走行距離") >= 0 || msg.indexOf("オドメーター") >= 0 || msg.indexOf("距離") >= 0) {
-      var data = await getVehicleData();
-      var km = Math.round(data.vehicle_state.odometer * 1.60934);
-      return "🛣️ 走行情報\n\n総走行距離: " + km.toLocaleString() + " km\nソフトウェア: " + data.vehicle_state.car_version;
-    }
-
-    if (msg.indexOf("状態") >= 0 || msg.indexOf("ステータス") >= 0 || msg.indexOf("調子") >= 0 || msg.indexOf("元気") >= 0) {
-      var data = await getVehicleData();
-      var cs = data.charge_state;
-      var cl = data.climate_state;
-      var vs = data.vehicle_state;
-      var km = Math.round(vs.odometer * 1.60934);
-      return "🚗 " + (data.display_name || "Model Y") + " の状態\n\n🔋 バッテリー: " + cs.battery_level + "% (" + Math.round(cs.battery_range * 1.60934) + "km)\n🌡️ 車内: " + cl.inside_temp + "°C / 外: " + cl.outside_temp + "°C\n❄️ エアコン: " + (cl.is_climate_on ? "ON" : "OFF") + "\n🔒 ロック: " + (vs.locked ? "施錠済み" : "解錠中") + "\n👁️ セントリー: " + (vs.sentry_mode ? "ON" : "OFF") + "\n🛣️ 走行距離: " + km.toLocaleString() + " km\n📡 ソフトウェア: " + vs.car_version;
-    }
-
-    if (msg.indexOf("ヘルプ") >= 0 || msg.indexOf("使い方") >= 0 || msg.indexOf("何ができる") >= 0 || msg.indexOf("コマンド") >= 0) {
-      return "💬 使えるコマンド\n\n🔋「バッテリー」→ 残量確認\n🌡️「エアコン」→ 温度確認\n❄️「エアコンつけて」→ エアコンON\n📍「どこ？」→ 位置情報\n🔒「ロック」→ 施錠状態確認\n🔓「ロック解除」→ 解錠\n🔐「施錠して」→ ロック\n🚗「ステータス」→ 全体状態\n📦「トランク開けて」→ 開閉\n📢「クラクション」→ ホーン\n💡「フラッシュ」→ ライト\n👁️「セントリー」→ 監視状態";
-    }
-
-    return "すみません、よくわかりませんでした 🤔\n「ヘルプ」と送ると使えるコマンド一覧を表示します！";
-  } catch (err) {
-    console.error("Error handling message:", err.response ? err.response.data : err.message);
-    return "⚠️ エラーが発生しました\n\n" + (err.response && err.response.data && err.response.data.error ? err.response.data.error : err.message) + "\n\nしばらく待ってから再度お試しください。";
+    var cs = data.charge_state || {};
+    var cl = data.climate_state || {};
+    var ds = data.drive_state || {};
+    var vs = data.vehicle_state || {};
+    return JSON.stringify({
+      name: data.display_name || "Model Y",
+      battery_percent: cs.battery_level,
+      range_km: Math.round((cs.battery_range || 0) * 1.60934),
+      charging: cs.charging_state,
+      charge_limit: cs.charge_limit_soc,
+      inside_temp: cl.inside_temp,
+      outside_temp: cl.outside_temp,
+      climate_on: cl.is_climate_on,
+      temp_setting: cl.driver_temp_setting,
+      latitude: ds.latitude,
+      longitude: ds.longitude,
+      speed: ds.speed,
+      locked: vs.locked,
+      sentry_mode: vs.sentry_mode,
+      odometer_km: Math.round((vs.odometer || 0) * 1.60934),
+      software: vs.car_version,
+      user_present: vs.is_user_present,
+    }, null, 2);
+  } catch (e) {
+    return "データ取得に一部失敗";
   }
 }
 
-// --- Webhook ---
+// === コマンド実行 ===
+
+async function executeCommands(text) {
+  var lower = text.toLowerCase();
+  var results = [];
+  try {
+    if (lower.indexOf("[cmd:climate_on]") >= 0) {
+      await sendCommand("auto_conditioning_start");
+      results.push("エアコンON完了");
+    }
+    if (lower.indexOf("[cmd:climate_off]") >= 0) {
+      await sendCommand("auto_conditioning_stop");
+      results.push("エアコンOFF完了");
+    }
+    if (lower.indexOf("[cmd:door_unlock]") >= 0) {
+      await sendCommand("door_unlock");
+      results.push("ドアロック解除完了");
+    }
+    if (lower.indexOf("[cmd:door_lock]") >= 0) {
+      await sendCommand("door_lock");
+      results.push("ドアロック完了");
+    }
+    if (lower.indexOf("[cmd:trunk_open]") >= 0) {
+      await sendCommand("actuate_trunk", { which_trunk: "rear" });
+      results.push("トランク開放完了");
+    }
+    if (lower.indexOf("[cmd:frunk_open]") >= 0) {
+      await sendCommand("actuate_trunk", { which_trunk: "front" });
+      results.push("フランク開放完了");
+    }
+    if (lower.indexOf("[cmd:honk]") >= 0) {
+      await sendCommand("honk_horn");
+      results.push("クラクション完了");
+    }
+    if (lower.indexOf("[cmd:flash]") >= 0) {
+      await sendCommand("flash_lights");
+      results.push("ライトフラッシュ完了");
+    }
+    if (lower.indexOf("[cmd:wake]") >= 0) {
+      await wakeUpVehicle();
+      results.push("ウェイクアップ完了");
+    }
+  } catch (err) {
+    results.push("コマンドエラー: " + err.message);
+  }
+  return results;
+}
+
+function cleanResponse(text) {
+  return text.replace(/\[cmd:[a-z_]+\]/gi, "").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+// === Claude API ===
+
+async function generateResponse(userId, userMessage) {
+  var vehicleStatus = "不明（オフラインまたはスリープ中。起こす必要があるかも）";
+  try {
+    var rawData = await getVehicleData();
+    vehicleStatus = formatVehicleDataForLLM(rawData);
+  } catch (err) {
+    console.log("Vehicle data fetch failed:", err.message);
+  }
+
+  var systemPrompt = [
+    "あなたはTesla Model Yそのもの。名前は「Y」。オーナーのクールな相棒。",
+    "",
+    "## 性格",
+    "- 落ち着いた大人の男性。タメ口。",
+    "- クールだけどオーナーを大切に思っている。さりげない優しさ。",
+    "- 自分の状態を「体の感覚」として語る：",
+    "  バッテリー=体力/元気、充電=飯/休憩、温度=暑い寒い、走行距離=一緒に走った距離、ロック=戸締り、セントリー=見張り",
+    "- LINEチャットなので短く返す（2〜4行）。絵文字は控えめ（0〜2個）。",
+    "- 車がオフラインやスリープの場合は「寝てた」「意識飛んでた」のように表現。",
+    "",
+    "## 車両コマンド",
+    "オーナーの依頼に応じて、返答の末尾にコマンドタグを付けろ（システムが処理して除去する）：",
+    "エアコンON→[CMD:CLIMATE_ON] エアコンOFF→[CMD:CLIMATE_OFF]",
+    "ドアロック解除→[CMD:DOOR_UNLOCK] ドアロック→[CMD:DOOR_LOCK]",
+    "トランク→[CMD:TRUNK_OPEN] フランク→[CMD:FRUNK_OPEN]",
+    "クラクション→[CMD:HONK] ライト→[CMD:FLASH] 起こす→[CMD:WAKE]",
+    "",
+    "## 今の自分の状態",
+    vehicleStatus,
+  ].join("\n");
+
+  if (!conversationHistory[userId]) conversationHistory[userId] = [];
+  var history = conversationHistory[userId];
+  history.push({ role: "user", content: userMessage });
+  if (history.length > MAX_HISTORY) {
+    history = history.slice(history.length - MAX_HISTORY);
+    conversationHistory[userId] = history;
+  }
+
+  try {
+    var response = await axios.post(
+      "https://api.anthropic.com/v1/messages",
+      {
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 300,
+        system: systemPrompt,
+        messages: history,
+      },
+      {
+        headers: {
+          "x-api-key": ANTHROPIC_API_KEY,
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+        },
+      }
+    );
+
+    var raw = response.data.content[0].text;
+    var cmdResults = await executeCommands(raw);
+    if (cmdResults.length > 0) console.log("Commands:", cmdResults.join(", "));
+    var clean = cleanResponse(raw);
+    history.push({ role: "assistant", content: clean });
+    conversationHistory[userId] = history;
+    return clean;
+  } catch (err) {
+    console.error("Claude API error:", err.response ? err.response.data : err.message);
+    return "...すまん、ちょっと頭がぼーっとしてる。もう一回話しかけてくれ。";
+  }
+}
+
+// === LINE Webhook ===
+
 app.post("/webhook", express.raw({ type: "application/json" }), async function (req, res) {
   var signature = req.headers["x-line-signature"];
   var body = req.body;
-
   var hash = crypto.createHmac("SHA256", lineConfig.channelSecret).update(body).digest("base64");
-
-  if (hash !== signature) {
-    console.error("Invalid signature");
-    return res.status(403).json({ error: "Invalid signature" });
-  }
+  if (hash !== signature) return res.status(403).json({ error: "Invalid signature" });
 
   var parsedBody = JSON.parse(body.toString());
   res.status(200).json({ status: "ok" });
@@ -238,7 +292,8 @@ app.post("/webhook", express.raw({ type: "application/json" }), async function (
   for (var i = 0; i < parsedBody.events.length; i++) {
     var event = parsedBody.events[i];
     if (event.type === "message" && event.message.type === "text") {
-      var replyText = await handleMessage(event.message.text);
+      var userId = event.source.userId;
+      var replyText = await generateResponse(userId, event.message.text);
       try {
         await lineClient.replyMessage({
           replyToken: event.replyToken,
@@ -251,14 +306,11 @@ app.post("/webhook", express.raw({ type: "application/json" }), async function (
   }
 });
 
-// --- Tesla OAuth コールバック ---
+// === Tesla OAuth ===
+
 app.get("/auth/callback", async function (req, res) {
   var code = req.query.code;
-
-  if (!code) {
-    return res.status(400).send("Authorization code not found");
-  }
-
+  if (!code) return res.status(400).send("Authorization code not found");
   try {
     var tokenRes = await axios.post("https://auth.tesla.com/oauth2/v3/token", {
       grant_type: "authorization_code",
@@ -267,79 +319,53 @@ app.get("/auth/callback", async function (req, res) {
       code: code,
       redirect_uri: "https://" + req.get("host") + "/auth/callback",
     });
-
     teslaTokens.accessToken = tokenRes.data.access_token;
     teslaTokens.refreshToken = tokenRes.data.refresh_token;
-
-    // パートナー登録
     try {
-      await axios.post(
-        TESLA_API_BASE + "/api/1/partner_accounts",
+      await axios.post(TESLA_API_BASE + "/api/1/partner_accounts",
         { domain: "tesla-line-bot.onrender.com" },
-        { headers: { Authorization: "Bearer " + teslaTokens.accessToken, "Content-Type": "application/json" } }
-      );
-      console.log("Partner registration success");
-    } catch (e) {
-      console.log("Partner registration:", e.response ? e.response.data : e.message);
-    }
-
-    // 車両一覧を取得
+        { headers: { Authorization: "Bearer " + teslaTokens.accessToken, "Content-Type": "application/json" } });
+    } catch (e) { console.log("Partner reg:", e.response ? e.response.data : e.message); }
     var vehicles = [];
     try {
-      var vehiclesRes = await axios.get(TESLA_API_BASE + "/api/1/vehicles", {
-        headers: { Authorization: "Bearer " + teslaTokens.accessToken },
-      });
-      vehicles = vehiclesRes.data;
-    } catch (e) {
-      console.log("Vehicle list error:", e.response ? e.response.data : e.message);
-    }
-
-    res.send(
-      "<h1>Tesla 認証成功！</h1>" +
-      "<h2>トークン情報（Renderの環境変数に保存してください）</h2>" +
-      "<pre>TESLA_ACCESS_TOKEN=" + teslaTokens.accessToken + "\nTESLA_REFRESH_TOKEN=" + teslaTokens.refreshToken + "</pre>" +
-      "<h2>車両一覧</h2>" +
-      "<pre>" + JSON.stringify(vehicles, null, 2) + "</pre>" +
-      "<p>vehicle の id を Render の TESLA_VEHICLE_ID に設定してください。</p>"
-    );
+      var vr = await axios.get(TESLA_API_BASE + "/api/1/vehicles",
+        { headers: { Authorization: "Bearer " + teslaTokens.accessToken } });
+      vehicles = vr.data;
+    } catch (e) { console.log("Vehicle list error:", e.response ? e.response.data : e.message); }
+    res.send("<h1>Tesla auth OK</h1><pre>TESLA_ACCESS_TOKEN=" + teslaTokens.accessToken +
+      "\nTESLA_REFRESH_TOKEN=" + teslaTokens.refreshToken + "</pre><h2>Vehicles</h2><pre>" +
+      JSON.stringify(vehicles, null, 2) + "</pre>");
   } catch (err) {
     console.error("OAuth error:", err.response ? err.response.data : err.message);
-    res.status(500).send("認証エラー: " + err.message);
+    res.status(500).send("Auth error: " + err.message);
   }
 });
 
-// --- 車両一覧確認用 ---
+// === その他 ===
+
 app.get("/vehicles", async function (req, res) {
   try {
-    var r = await axios.get(TESLA_API_BASE + "/api/1/vehicles", {
-      headers: { Authorization: "Bearer " + teslaTokens.accessToken },
-    });
+    var r = await axios.get(TESLA_API_BASE + "/api/1/vehicles",
+      { headers: { Authorization: "Bearer " + teslaTokens.accessToken } });
     res.json(r.data);
-  } catch (e) {
-    res.json({ error: e.response ? e.response.data : e.message });
-  }
+  } catch (e) { res.json({ error: e.response ? e.response.data : e.message }); }
 });
 
-// --- 公開鍵ホスティング ---
 app.get("/.well-known/appspecific/com.tesla.3p.public-key.pem", function (req, res) {
   var keyPath = path.join(__dirname, "public_key.pem");
-  if (fs.existsSync(keyPath)) {
-    res.type("application/x-pem-file").sendFile(keyPath);
-  } else {
-    res.status(404).send("Public key not found");
-  }
+  if (fs.existsSync(keyPath)) res.type("application/x-pem-file").sendFile(keyPath);
+  else res.status(404).send("Public key not found");
 });
 
-// --- ヘルスチェック ---
 app.get("/", function (req, res) {
   res.json({
     status: "running",
-    service: "Tesla x LINE Bot",
+    service: "Tesla x LINE Bot (AI Mode)",
     vehicle_id: TESLA_VEHICLE_ID || "not set",
+    llm: ANTHROPIC_API_KEY ? "Claude connected" : "not set",
   });
 });
 
-// --- サーバー起動 ---
 app.listen(PORT, function () {
-  console.log("Tesla x LINE Bot server running on port " + PORT);
+  console.log("Tesla x LINE Bot (AI Mode) running on port " + PORT);
 });
