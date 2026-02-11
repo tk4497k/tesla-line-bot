@@ -1,0 +1,19 @@
+{
+  "name": "tesla-line-bot",
+  "version": "1.0.0",
+  "description": "LINE Bot to control Tesla Model Y via Tesla Fleet API",
+  "main": "tesla-line-server.js",
+  "scripts": {
+    "start": "node tesla-line-server.js",
+    "dev": "node --watch tesla-line-server.js"
+  },
+  "dependencies": {
+    "@line/bot-sdk": "^9.0.0",
+    "axios": "^1.7.0",
+    "dotenv": "^16.4.0",
+    "express": "^4.21.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
